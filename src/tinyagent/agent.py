@@ -20,3 +20,10 @@ class TinyAgent:
         """Execute a tool action."""
         # Placeholder - will be implemented in later chapters
         return f"Executed action: {action}"
+
+
+# test
+if __name__ == "__main__":
+    agent = TinyAgent()
+    result = agent.run("what is 1 + 1")
+    print(result)
