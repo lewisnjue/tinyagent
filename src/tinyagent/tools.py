@@ -8,6 +8,11 @@ import json
 class Tools:
     """Tool registry for the Agent."""
 
+    def __init__(self, requires_approval: list[str] = []):
+        """Initialize and select tools that require approval before execution."""
+        self.registry = {}
+        self.requires_approval = requires_approval
+
     def parse(self, response: Response) -> Response:
         """Parse a JSON tool call from text."""
         text = response.content
@@ -59,11 +64,6 @@ class Tools:
             return tool_func(**kwargs)
 
         return f"Tool '{name}' not found."
-
-    def __init__(self, requires_approval: list[str] = []):
-        """Initialize and select tools that require approval before execution."""
-        self.registry = {}
-        self.requires_approval = requires_approval
 
     def add_tool(self, name: str, func: Callable, description: str = "") -> None:
         """Register a tool that the Agent can use.
