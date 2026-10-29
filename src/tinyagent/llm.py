@@ -23,7 +23,7 @@ class LLM:
     ) -> None:
         """Initialize the LLM with the given model ."""
         self.model = model
-        self.base_url = base_ur
+        self.base_url = base_url
         self.api_key = api_key
         self.think = think
 
