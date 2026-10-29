@@ -41,7 +41,7 @@ class LLM:
         # POST to OpenAI compatible /chat/completions endpoint
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
-            data=json.dump(body).encode(),
+            data=json.dumps(body).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
