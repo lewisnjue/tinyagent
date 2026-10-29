@@ -1,13 +1,14 @@
 from .llm import LLM
 from .trajectory import Trajectory
+from .memory import Memory
 
 
 class TinyAgent:
     """A minimal, modular, and educational agent framework."""
 
-    def __init__(self, llm: LLM):
+    def __init__(self, llm: LLM, memory: Memory):
         self.llm = llm
-        self.memory = None  # Chapter 4: Add Memory
+        self.memory = memory
         self.tools = None  # Chapter 5: Add Tools
         self.planner = None  # Chapter 6: Add Planning
 
@@ -15,13 +16,14 @@ class TinyAgent:
 
     def run(self, task: str) -> str:
         """Run the agent on a task."""
+        self.memory.add(role="user", content=task)
         self.trajectory.initialize(task)
-        return self._step(task)
+        return self._step()
 
-    def _step(self, task: str) -> str:
+    def _step(self) -> str:
         """Perform a single step."""
-        messages = [{"role": "user", "content": task}]
-        response = self.llm.generate(messages)
+        response = self.llm.generate(self.memory.get_messages())
+        self.memory.add("assistant", response.content)
         self.trajectory.add(response)
         return response.content
 
