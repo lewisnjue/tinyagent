@@ -1,8 +1,9 @@
-from dataclasses import dataclass
 import json
 import urllib.request
+from dataclasses import dataclass
 
 
+# -- move to utils
 @dataclass
 class Response:
     """Strucred response from LLM calls."""
@@ -41,7 +42,6 @@ class LLM:
             body["tools"] = tools
         if not self.think:
             body["reasoning_effort"] = "none"
-        # POST to OpenAI compatible /chat/completions endpoint
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode(),

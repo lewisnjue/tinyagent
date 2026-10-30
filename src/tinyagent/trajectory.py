@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 
+# -- move to utils
 @dataclass
 class Step:
     """A single step in an agent's trajectory."""

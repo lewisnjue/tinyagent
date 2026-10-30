@@ -1,6 +1,7 @@
-from .llm import LLM
 import json
 import urllib.request
+
+from tinyagent.llm import LLM
 
 
 class Memory:

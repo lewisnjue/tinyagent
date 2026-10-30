@@ -1,7 +1,7 @@
-from .llm import LLM, Response
-from .tools import Tools
-from .trajectory import Trajectory
-from .memory import Memory
+from tinyagent.llm import LLM, Response
+from tinyagent.memory import Memory
+from tinyagent.tools import Tools
+from tinyagent.trajectory import Trajectory
 
 
 class TinyAgent:

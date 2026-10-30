@@ -1,8 +1,8 @@
-from collections.abc import Callable
 import inspect
-from typing import Any
-from .llm import Response
 import json
+from collections.abc import Callable
+from typing import Any
+from tinyagent.llm import Response
 
 
 class Tools:
@@ -102,6 +102,7 @@ class Tools:
         return None
 
 
+# --- move to utils
 # Convert specific types to string descriptions
 TYPE_MAP = {
     str: "string",
@@ -141,6 +142,7 @@ def tool_to_schema(function: Callable) -> dict:
     return schema
 
 
+# -- move to utils
 class NativeTools(Tools):
     """Tool registry using native function calling."""
 
