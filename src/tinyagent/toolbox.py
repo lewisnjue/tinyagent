@@ -48,3 +48,15 @@ def tool_to_schema(function: Callable) -> dict:
     }
 
     return schema
+
+
+
+@dataclass
+class Step:
+    """A single step in an agent's trajectory."""
+
+    thought: str = ""
+    action: dict | None = None
+    observation: str | None = None
+    answer: str | None = None
+    metadata: dict | None = None
