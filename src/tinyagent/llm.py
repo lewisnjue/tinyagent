@@ -1,17 +1,6 @@
 import json
 import urllib.request
-from dataclasses import dataclass
-
-
-# -- move to utils
-@dataclass
-class Response:
-    """Strucred response from LLM calls."""
-
-    content: str = ""
-    reasoning: str | None = None
-    tool_call: dict | None = None
-    metadata: dict | None = None
+from tinyagent.toolbox import Response
 
 
 class LLM:
