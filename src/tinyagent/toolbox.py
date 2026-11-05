@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from collections.abc import Callable
 import inspect
+
+
 @dataclass
 class Response:
     """Strucred response from LLM calls."""
@@ -50,7 +52,6 @@ def tool_to_schema(function: Callable) -> dict:
     return schema
 
 
-
 @dataclass
 class Step:
     """A single step in an agent's trajectory."""
@@ -60,3 +61,16 @@ class Step:
     observation: str | None = None
     answer: str | None = None
     metadata: dict | None = None
+
+    # type hint for the scorerers
+    # # ( prediction: str, examle:dict) -> bool  } float
+
+
+Scorer = Callable[[str, dict], bool | float]
+
+
+@dataclass
+class Benchmark:
+    name: str
+    examples: list[dict]
+    scorer: Callabl
