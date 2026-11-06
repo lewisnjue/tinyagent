@@ -1,106 +1,128 @@
+import inspect
 import json
+import re
+import textwrap
 from collections.abc import Callable
 from typing import Any
-from tinyagent.llm import Response
-from tinyagent.toolbox import tool_to_schema
+
+from tinyagent.schema import tool_to_schema
+from tinyagent.types import Response
+
 
 class Tools:
-    """Tool registry for the Agent."""
+    """Tool registry for text-based ReAct agents."""
 
-    def __init__(self, requires_approval: list[str] = []):
-        """Initialize and select tools that require approval before execution."""
-        self.registry = {}
-        self.requires_approval = requires_approval
+    def __init__(self, requires_approval: list[str] | None = None) -> None:
+        self.registry: dict[str, dict[str, Any]] = {}
+        self.requires_approval = list(requires_approval or [])
 
     def parse(self, response: Response) -> Response:
-        """Parse a JSON tool call from text."""
-        text = response.content
+        """Parse a JSON action, recording malformed model output for recovery."""
+        text = response.content or ""
+        if not re.search(r'"tool"\s*:', text):
+            return response
 
-        if '"tool":' in text or '"tool:"' in text:
-            start, end = text.find("{"), text.rfind("}") + 1
-            tool_call = json.loads(text[start:end])
+        decoder = json.JSONDecoder()
+        for start, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                action, _ = decoder.raw_decode(text[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(action, dict) and "tool" in action:
+                response.tool_calls = [action]
+                return response
 
-            # Add the parsed tool call to the response
-            return Response(
-                content=response.content,
-                reasoning=response.reasoning,
-                tool_call=tool_call,
-            )
-
+        response.parse_error = "Invalid JSON action. Reply with a valid ACTION blob."
         return response
 
     def observation(self, result: str) -> tuple[str, str]:
-        """Return the observation as a user."""
+        """Return a text-mode observation as a user message."""
         return "user", f"OBSERVATION: {result}"
 
     def is_done(self, response: Response) -> bool:
-        """The `TinyAgent`'s stopping mechanism."""
-        if not response.tool_call:
+        """Return whether the action ends the run; normalize final answers."""
+        action = response.tool_call
+        if not action:
             return True
-        if response.tool_call["tool"] == "final_answer":
-            response.content = response.tool_call.get("kwargs", "")
-            return True
-        return False
+        if action.get("tool") != "final_answer":
+            return False
+        # Normalize in place because TinyAgent returns response.content directly.
+        answer = action.get("kwargs", "")
+        if isinstance(answer, dict):
+            answer = answer.get("answer") or next(
+                (value for value in answer.values() if isinstance(value, str)), ""
+            )
+        response.content = str(answer)
+        return True
 
-    def execute(self, response: Response) -> Any:
-        """Run a registered tool.
+    def execute(self, response: Response) -> str:
+        """Execute a parsed tool action or return a recoverable error message."""
+        action = response.tool_call or {}
+        name = action.get("tool", "")
+        kwargs = action.get("kwargs", {})
+        if not isinstance(kwargs, dict):
+            return f"Error: 'kwargs' must be an object, got {type(kwargs).__name__}."
+        if name not in self.registry:
+            available = ", ".join(sorted(self.registry)) or "(none)"
+            return f"Tool '{name}' not found. Available tools: {available}."
 
-        Arguments:
-            tool_call: A parsed tool call dict with "tool" and "kwargs" keys.
-        """
-        tool_call = response.tool_call
-        name, kwargs = tool_call["tool"], tool_call.get("kwargs", {})
-
-        # Human-in-the-loop: ask before running dangerous tools
-        if name in self.registry and name in self.requires_approval:
-            response = input(f"Allow {name}? [y/N] ").strip().lower()
-            if response not in ("y", "yes"):
+        if name in self.requires_approval:
+            answer = input(f"Allow {name}? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
                 return f"Tool '{name}' was denied by the user."
+        try:
+            return str(self.registry[name]["function"](**kwargs))
+        except TypeError as error:
+            return f"Error calling '{name}': {error}"
+        except Exception as error:
+            return f"Tool '{name}' failed: {type(error).__name__}: {error}"
 
-        # Handle registered tools
-        if name in self.registry:
-            tool_func = self.registry[name]["function"]
-            return tool_func(**kwargs)
-
-        return f"Tool '{name}' not found."
-
-    def add_tool(self, name: str, func: Callable, description: str = "") -> None:
-        """Register a tool that the Agent can use.
-
-        Arguments:
-            name: The name of the tool.
-            func: The function implementing the tool.
-            description: A description of the tool.
-        """
-        self.registry[name] = {"function": func, "description": description}
+    def add_tool(
+        self,
+        func: Callable,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        """Register a callable; its signature and docstring describe the tool."""
+        tool_name = name or func.__name__
+        docstring = inspect.getdoc(func) or ""
+        tool_description = description or (
+            docstring.splitlines()[0] if docstring else ""
+        )
+        self.registry[tool_name] = {
+            "function": func,
+            "description": tool_description,
+        }
 
     @property
     def descriptions(self) -> str:
-        """Get descriptions of all registered tools."""
-        return "\n".join(
-            f"`{tool}`: {self.registry[tool]['description']}" for tool in self.registry
-        )
-
-    @property
-    def prompt(self) -> str:
-        return f"""
-        # Tools
-            
-        If needed, you can only use the following tools to assist you 
-        in completing tasks:
-        
-        {self.descriptions}
-        
-        To use a tool, respond with JSON: 
-        {{"tool": "name", "kwargs": {{"param": "value"}}}}
-        """
+        """Get each registered tool's signature and short description."""
+        lines = []
+        for name, tool in self.registry.items():
+            signature = inspect.signature(tool["function"])
+            lines.append(f"`{name}{signature}`: {tool['description']}")
+        return "\n".join(lines)
 
     @property
     def schemas(self) -> None:
-        """Used only for native tool-calling."""
+        """Text-based tools do not send function schemas to the model."""
         return None
 
+    @property
+    def prompt(self) -> str:
+        return textwrap.dedent(
+            f"""
+            # Tools
 
+            If needed, use only these tools:
+            {self.descriptions}
+
+            Return an action as valid JSON:
+            {{"tool": "name", "kwargs": {{"param": "value"}}}}
+            """
+        ).strip()
 
 
 class NativeTools(Tools):
@@ -108,40 +130,64 @@ class NativeTools(Tools):
 
     @property
     def schemas(self) -> list[dict]:
-        """Return tool functions for native function calling."""
-        return [tool_to_schema(tool["function"]) for tool in self.registry.values()]
+        return [
+            tool_to_schema(tool["function"], name=name, description=tool["description"])
+            for name, tool in self.registry.items()
+        ]
 
     @property
     def prompt(self) -> str:
-        """Empty because we don't need a prompt for native tool calling"""
         return ""
 
     def parse(self, response: Response) -> Response:
-        """Parse a tool call."""
-        # If there's no tool call, return the response as is
-        if not response.tool_call:
-            return response
+        """Normalize every native call while retaining its provider call ID."""
+        actions = []
+        for call in response.tool_calls:
+            if not isinstance(call, dict):
+                actions.append(
+                    {
+                        "tool": "",
+                        "kwargs": {},
+                        "error": "Invalid native tool call: expected an object.",
+                    }
+                )
+                continue
+            function = call.get("function", {})
+            if not isinstance(function, dict):
+                function = {}
+            try:
+                arguments = function.get("arguments", {})
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                if not isinstance(arguments, dict):
+                    raise ValueError("tool arguments must be a JSON object")
+            except (KeyError, json.JSONDecodeError, ValueError, TypeError) as error:
+                actions.append(
+                    {
+                        "id": call.get("id"),
+                        "tool": function.get("name", ""),
+                        "kwargs": {},
+                        "error": f"Invalid native tool arguments: {error}",
+                    }
+                )
+                continue
+            actions.append(
+                {
+                    "id": call.get("id"),
+                    "tool": function.get("name", ""),
+                    "kwargs": arguments,
+                }
+            )
+        response.tool_calls = actions
+        return response
 
-        # Extract the tool name and arguments from the tool call
-        args = response.tool_call["function"]["arguments"]
-        if isinstance(args, str):
-            args = json.loads(args)
-        tool_call = {
-            "tool": response.tool_call["function"]["name"],
-            "kwargs": args,
+    def observation(self, result: str, tool_call_id: str | None = None) -> dict:
+        """Build a provider-compliant native tool result message."""
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id or "",
+            "content": str(result),
         }
 
-        # Add the parsed tool call to the response
-        return Response(
-            content=response.content,
-            reasoning=response.reasoning,
-            tool_call=tool_call,
-        )
-
-    def observation(self, result: str) -> tuple[str, str]:
-        """Native tool results use the 'tool' role."""
-        return "tool", str(result)
-
     def is_done(self, response: Response) -> bool:
-        """No tool call means the `TinyAgent` is done."""
-        return not response.tool_call
+        return not response.tool_calls

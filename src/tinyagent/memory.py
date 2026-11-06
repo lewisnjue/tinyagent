@@ -1,136 +1,206 @@
 import json
-import urllib.request
+import math
+from typing import TYPE_CHECKING
 
-from tinyagent.llm import LLM
+from tinyagent.embeddings import EmbeddingModel
+from tinyagent.types import Response
+
+if TYPE_CHECKING:
+    from tinyagent.llm import LLM
+
+
+def is_task_message(message: dict) -> bool:
+    content = message.get("content") or ""
+    return message.get("role") == "user" and not content.startswith("OBSERVATION:")
 
 
 class Memory:
-    """Simple memory module to store conversation history."""
+    """Simple conversation memory with an optional system prompt."""
 
-    def __init__(self):
-        self.messages = []
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+        self.system: dict | None = None
 
     def add(
-        self, role: str, content: str, tool_call: dict | None = None, **kwargs
+        self,
+        role: str,
+        content: str | None,
+        tool_call: dict | None = None,
+        tool_calls: list[dict] | None = None,
+        **kwargs,
     ) -> None:
-        """Add a message to memory."""
-        message = {"role": role, "content": content}
+        message = {"role": role, "content": content or ""}
+        calls = tool_calls or ([tool_call] if tool_call else [])
+        if calls:
+            message["tool_calls"] = [self._provider_tool_call(call) for call in calls]
+        message.update(kwargs)
+        self.add_message(message)
 
-        # Tool call
-        if tool_call:
-            message["tool_calls"] = [tool_call]
+    @staticmethod
+    def _provider_tool_call(call: dict) -> dict:
+        if not isinstance(call, dict):
+            return {
+                "id": "",
+                "type": "function",
+                "function": {"name": "", "arguments": "{}"},
+            }
+        source_function = call.get("function")
+        if isinstance(source_function, dict):
+            function = dict(source_function)
+        else:
+            function = {
+                "name": call.get("tool", ""),
+                "arguments": call.get("kwargs", {}),
+            }
+        arguments = function.get("arguments", {})
+        if not isinstance(arguments, str):
+            function["arguments"] = json.dumps(arguments)
+        return {**call, "type": call.get("type", "function"), "function": function}
 
-        # Append message to memory
-        self.messages.append(message)
+    def add_message(self, message: dict) -> None:
+        stored = dict(message)
+        if stored.get("role") == "system":
+            self.system = stored
+        else:
+            self.messages.append(stored)
 
     def get_messages(self) -> list[dict]:
-        """Get all messages."""
-        return self.messages
+        """Return a shallow copy of the message list."""
+        return ([dict(self.system)] if self.system else []) + [
+            dict(message) for message in self.messages
+        ]
+
+    def end_turn(self) -> None:
+        """Hook called after an agent run finishes."""
+
+    def reset(self) -> None:
+        """Clear conversation messages while retaining the system prompt."""
+        self.messages.clear()
 
 
 class TrimmingMemory(Memory):
-    """Memory that keeps only the last two user/assistant turns."""
+    """Memory retaining the most recent complete user-task turns."""
 
-    def add(self, role: str, content: str, **kwargs) -> None:
-        # Add the new message first using the parent class (Memory)
-        super().add(role, content, **kwargs)
+    def __init__(self, max_turns: int = 2) -> None:
+        super().__init__()
+        if max_turns < 1:
+            raise ValueError("max_turns must be at least 1")
+        self.max_turns = max_turns
 
-        # Then, keep system message plus the most recent two turns (4 messages)
-        system = [message for message in self.messages if message["role"] == "system"]
-        turns = [message for message in self.messages if message["role"] != "system"]
-        self.messages = system + turns[-4:]
+    def add_message(self, message: dict) -> None:
+        super().add_message(message)
+        task_indexes = [
+            index for index, item in enumerate(self.messages) if is_task_message(item)
+        ]
+        if len(task_indexes) > self.max_turns:
+            del self.messages[: task_indexes[-self.max_turns]]
 
 
 class SummarizationMemory(Memory):
-    """Memory that compresses past turns into a running summary via an LLM."""
+    """Compress completed conversation turns while preserving system instructions."""
 
-    def __init__(self, llm: LLM):
+    def __init__(self, llm: "LLM") -> None:
         super().__init__()
         self.llm = llm
+        self.summary = ""
 
-    def add(self, role: str, content: str, **kwargs) -> None:
-        # Add the new message first using the parent class (Memory)
-        super().add(role, content, **kwargs)
+    def get_messages(self) -> list[dict]:
+        messages = super().get_messages()
+        if self.summary:
+            system_index = 1 if self.system else 0
+            messages.insert(
+                system_index,
+                {"role": "system", "content": f"Conversation summary: {self.summary}"},
+            )
+        return messages
 
-        # After each completed turn, update the running summary
-        if role == "assistant":
-            # Split the existing summary from the new conversation turns
-            summary = ""
-            conversation = ""
-            for message in self.messages:
-                if message["role"] == "system":
-                    summary = message["content"]
-                else:
-                    conversation += f"{message['role']}: {message['content']}\n"
-
-            # Ask the LLM to extend the summary with the new conversation
-            prompt = f"""Update the summary with the new conversation.
-                    Summary: {summary}
-                    
-                    Conversation:
-                    {conversation}
-                    Output the updated summary only."""
-            response = self.llm.generate([{"role": "user", "content": prompt}])
-            self.messages = [{"role": "system", "content": response.content}]
-
-
-class EmbeddingModel:
-    """Generate embeddings."""
-
-    # !ollama pull embeddinggemma > /dev/null 2>&1, you can pull model thisway
-
-    def __init__(
-        self,
-        model: str,
-        base_url: str = "http://localhost:11434/v1",
-    ):
-        """Initialize the embedding model with the given model."""
-        self.model = model
-        self.base_url = base_url
-
-    def embed(self, text: str) -> list[float]:
-        """Convert text into a numerical vector."""
-        # POST to the OpenAI-compatible /embeddings endpoint
-        request = urllib.request.Request(
-            f"{self.base_url}/embeddings",
-            data=json.dumps({"model": self.model, "input": text}).encode(),
-            headers={"Content-Type": "application/json"},
+    def end_turn(self) -> None:
+        if not self.messages:
+            return
+        conversation = []
+        for message in self.messages:
+            content = message.get("content")
+            calls = message.get("tool_calls")
+            if content:
+                conversation.append(f"{message['role']}: {content}")
+            if calls:
+                compact = [
+                    {
+                        "name": call.get("function", {}).get("name", call.get("tool")),
+                        "arguments": call.get("function", {}).get(
+                            "arguments", call.get("kwargs")
+                        ),
+                    }
+                    for call in calls
+                ]
+                conversation.append(f"tool calls: {compact}")
+        if not conversation:
+            self.messages.clear()
+            return
+        conversation_text = "\n".join(conversation)
+        prompt = (
+            "Update the conversation summary with these messages. Preserve useful "
+            "facts and unresolved user preferences. Output only the summary.\n\n"
+            f"Previous summary:\n{self.summary}\n\n"
+            f"Conversation:\n{conversation_text}"
         )
-        with urllib.request.urlopen(request) as resp:
-            response = json.loads(resp.read())
+        response: Response = self.llm.generate([{"role": "user", "content": prompt}])
+        self.summary = response.content
+        self.messages.clear()
 
-        # Extract and return the embedding
-        return response["data"][0]["embedding"]
+    def reset(self) -> None:
+        super().reset()
+        self.summary = ""
 
 
 class RAGMemory(Memory):
-    """Long-term Memory with RAG."""
+    """Conversation memory that retrieves relevant documents for task messages."""
 
-    def __init__(self, embedding_model: EmbeddingModel, documents: list[str]):
+    def __init__(
+        self,
+        embedding_model: EmbeddingModel,
+        documents: list[str],
+        top_k: int = 3,
+    ) -> None:
         super().__init__()
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
         self.embedding_model = embedding_model
-        self.documents = documents
-        self.embeddings = [embedding_model.embed(doc) for doc in documents]
+        self.documents = list(documents)
+        self.top_k = top_k
+        self.embeddings = (
+            embedding_model.embed(self.documents) if self.documents else []
+        )
 
-    def add(self, role: str, content: str, **kwargs) -> None:
-        # Augment user queries with retrieved context before storing
-        if role == "user":
-            context = "\n".join(self.search(content))
-            content = f"""Context:
-                {context}
-                
-                Question: {content}"""
-        super().add(role, content, **kwargs)
+    def get_messages(self) -> list[dict]:
+        messages = super().get_messages()
+        for index in range(len(messages) - 1, -1, -1):
+            if is_task_message(messages[index]):
+                task = messages[index].get("content") or ""
+                context = "\n".join(self.search(task))
+                if context:
+                    messages[index]["content"] = (
+                        f"Relevant context:\n{context}\n\nTask:\n{task}"
+                    )
+                break
+        return messages
 
     def search(self, query: str) -> list[str]:
-        """Return the top-k documents most similar to the query."""
-        query_embed = self.embedding_model.embed(query)
-        scores = [self._cosine(query_embed, embed) for embed in self.embeddings]
-        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        return [self.documents[index] for index in ranked[:3]]
+        """Return the most similar documents for a query."""
+        if not self.documents:
+            return []
+        query_embedding = self.embedding_model.embed(query)
+        scores = [
+            self._cosine(query_embedding, embedding) for embedding in self.embeddings
+        ]
+        ranked = sorted(
+            range(len(scores)), key=lambda index: scores[index], reverse=True
+        )
+        return [self.documents[index] for index in ranked[: self.top_k]]
 
-    def _cosine(self, a: list[float], b: list[float]) -> float:
-        """Calculate cosine similarity between two embeddings.."""
-        dot = sum(x * y for x, y in zip(a, b))
-        norm = (sum(x * x for x in a) ** 0.5) * (sum(x * x for x in b) ** 0.5)
-        return dot / norm
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        """Calculate cosine similarity, returning zero for zero-length vectors."""
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
+        norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(x * x for x in b))
+        return dot / norm if norm else 0.0

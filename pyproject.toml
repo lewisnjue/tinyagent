@@ -1,16 +1,27 @@
 [project]
 name = "tinyagent"
 version = "0.1.0"
-description = "Add your description here"
+description = "A tiny, dependency-free Python framework for learning how LLM agents work"
 readme = "README.md"
 authors = [
     { name = "lewisnjue", email = "njue.prime@gmail.com" }
 ]
-requires-python = ">=3.14"
+license = "MIT"
+keywords = ["agents", "llm", "education", "ollama"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.11"
 dependencies = []
 
-[project.scripts]
-tinyagent = "tinyagent:main"
+[project.urls]
+Homepage = "https://github.com/lewisnjue/tinyagent"
+Repository = "https://github.com/lewisnjue/tinyagent"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
@@ -18,5 +29,17 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0",
     "ruff>=0.17.3",
 ]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires a local Ollama endpoint"]

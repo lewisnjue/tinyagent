@@ -57,8 +57,7 @@ class StudyNotes:
             entry
             for entry in self.notes
             if all(
-                term in f"{entry['topic']} {entry['note']}".casefold()
-                for term in terms
+                term in f"{entry['topic']} {entry['note']}".casefold() for term in terms
             )
         ]
         if not matches:
@@ -95,6 +94,10 @@ def parse_args() -> argparse.Namespace:
         help="Use native function calling or the text-based ReAct protocol.",
     )
     parser.add_argument("--model", default="gemma4:e4b", help="Ollama model name.")
+    parser.add_argument("--think", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--verbose", action="store_true", help="Print each agent thought and action."
+    )
     parser.add_argument(
         "--base-url",
         default="http://localhost:11434/v1",
@@ -120,17 +123,24 @@ def main() -> None:
 
     if args.mode == "native":
         tools = NativeTools()
-        planner = NativeReAct(max_steps=8)
+        planner = NativeReAct()
     else:
         tools = Tools()
-        planner = ReAct(max_steps=8)
+        planner = ReAct()
 
-    tools.add_tool("remember_note", notes.remember_note)
-    tools.add_tool("search_notes", notes.search_notes)
-    tools.add_tool("plan_study_session", plan_study_session)
+    tools.add_tool(notes.remember_note)
+    tools.add_tool(notes.search_notes)
+    tools.add_tool(plan_study_session)
 
-    llm = LLM(model=args.model, base_url=args.base_url)
-    agent = TinyAgent(llm=llm, memory=Memory(), tools=tools, planner=planner)
+    llm = LLM(model=args.model, base_url=args.base_url, think=args.think)
+    agent = TinyAgent(
+        llm=llm,
+        memory=Memory(),
+        tools=tools,
+        planner=planner,
+        max_steps=8,
+        verbose=args.verbose,
+    )
     task = " ".join(args.task) or (
         "I am learning Python functions. Make me a 30-minute study plan, "
         "save that I want to practice writing small functions, and summarize "
